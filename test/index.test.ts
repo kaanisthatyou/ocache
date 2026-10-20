@@ -9160,13 +9160,56 @@ describe("maxResolveTime", () => {
     const fn = defineCachedFunction(() => ++calls, {
       maxAge: 10,
       name: "hangWrite",
-      maxResolveTime: 0.02,
+      maxResolveTime: 2,
+    });
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      expect(await fn()).toBe(1);
+      vi.setSystemTime(Date.now() + 1900);
+      // Within the deadline the next call still follows the first resolution.
+      expect(await fn()).toBe(1);
+      vi.setSystemTime(Date.now() + 200);
+      expect(await fn()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The hold serves a settled value, so it ends with that value's lifetime, even with no deadline.
+  it("releases a held slot once its value's maxAge has passed", async () => {
+    useTestStorage({ get: () => null, set: () => new Promise<void>(() => {}) });
+    let calls = 0;
+    const fn = defineCachedFunction(() => ++calls, {
+      maxAge: 1,
+      name: "holdMaxAge",
+      maxResolveTime: 0,
+    });
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      expect(await fn()).toBe(1);
+      vi.setSystemTime(Date.now() + 900);
+      expect(await fn()).toBe(1);
+      vi.setSystemTime(Date.now() + 200);
+      expect(await fn()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // `shouldInvalidateCache` forces a fresh resolution; a settled value waiting on its write is
+  // not one.
+  it("does not hand a held value to a forced revalidation", async () => {
+    useTestStorage({ get: () => null, set: () => new Promise<void>(() => {}) });
+    let calls = 0;
+    const fn = defineCachedFunction(() => ++calls, {
+      maxAge: 10,
+      name: "holdForced",
+      shouldInvalidateCache: () => true,
     });
 
     expect(await fn()).toBe(1);
-    // Within the deadline the next call still follows the first resolution.
-    expect(await fn()).toBe(1);
-    await new Promise((r) => setTimeout(r, 50));
     expect(await fn()).toBe(2);
   });
 

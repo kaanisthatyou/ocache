@@ -248,8 +248,11 @@ export function defineCachedFunction<T, ArgsT extends unknown[] = any[]>(
 
     const resolveEntry = async () => {
       let current = pending.get(key);
-      // A write that has not landed within the deadline no longer holds the key.
-      if (current?.holdUntil !== undefined && Date.now() > current.holdUntil) {
+      // A held slot is a settled value: it expires with its bound, and a forced call never reuses it.
+      if (
+        current?.holdUntil !== undefined &&
+        (shouldInvalidateCache || Date.now() > current.holdUntil)
+      ) {
         releasePending(key, current);
         current = undefined;
       }
@@ -394,18 +397,20 @@ export function defineCachedFunction<T, ArgsT extends unknown[] = any[]>(
             waitUntil(evictPromise);
           }
         } finally {
-          // Hold the slot until the write is decided so a purge can still fence it.
           if (landing) {
             // A call whose read raced this write missed it; it follows this resolution until
-            // the write lands, bounded like the resolution so a stalled `set` cannot pin the key.
-            if (maxResolveTime) {
-              current.holdUntil = Date.now() + maxResolveTime * 1000;
-            }
+            // the write lands. A stalled `set` holds no longer than the deadline, and never past
+            // the value's own `maxAge` (positive here, or nothing would be written).
+            const lifetime = (entry.maxAge ?? opts.maxAge)! * 1000;
+            current.holdUntil =
+              entry.mtime! +
+              (maxResolveTime ? Math.min(maxResolveTime * 1000, lifetime) : lifetime);
             const held = current;
             const release = () => releasePending(key, held);
             // A write that fails (and an `onError` that rethrows) still releases the slot.
             void landing.then(release, release);
           } else {
+            // Release once the write is decided, so a purge could still fence it until here.
             releasePending(key, current);
           }
         }
