@@ -4525,6 +4525,35 @@ describe("defineCachedHandler", () => {
     expect(res.status).toBe(304);
   });
 
+  it("does not 304 or tag a non-cacheable status", async () => {
+    const path = uniquePath();
+    const handler = defineCachedHandler(() => new Response("not found", { status: 404 }), {
+      maxAge: 60,
+    });
+
+    const plain = (await handler(makeEvent(path))) as Response;
+    expect(plain.status).toBe(404);
+    expect(plain.headers.get("etag")).toBeNull();
+
+    // `*` matches only where a current representation exists.
+    const star = (await handler(
+      makeEvent(path, { headers: { "if-none-match": "*" } }),
+    )) as Response;
+    expect(star.status).toBe(404);
+    expect(await star.text()).toBe("not found");
+
+    // A handler's own validator still cannot turn a 410 into a 304.
+    const tagged = defineCachedHandler(
+      () => new Response("gone", { status: 410, headers: { etag: '"v1"' } }),
+      { maxAge: 60 },
+    );
+    const echoed = (await tagged(
+      makeEvent(uniquePath(), { headers: { "if-none-match": '"v1"' } }),
+    )) as Response;
+    expect(echoed.status).toBe(410);
+    expect(await echoed.text()).toBe("gone");
+  });
+
   it("headersOnly mode delegates to handler", async () => {
     let callCount = 0;
     const path = uniquePath();
@@ -7144,6 +7173,24 @@ describe("defineCachedHandler", () => {
     (req as any).runtime = "cloudflare";
     await handler({ req });
     expect(runtimeValue).toBe("cloudflare");
+  });
+
+  it("inherits request context on filtered request", async () => {
+    let contextValue: unknown;
+    const path = uniquePath();
+    const handler = defineCachedHandler(
+      (event) => {
+        contextValue = (event.req as any).context;
+        return new Response("ok");
+      },
+      { maxAge: 10 },
+    );
+
+    const context = { matchedRoute: path };
+    const req = new Request(`http://localhost${path}`);
+    (req as any).context = context;
+    await handler({ req });
+    expect(contextValue).toBe(context);
   });
 
   it("handles URL with special characters", async () => {
